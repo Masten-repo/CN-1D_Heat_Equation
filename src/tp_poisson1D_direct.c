@@ -22,20 +22,20 @@ int main(int argc,char *argv[])
 /* ** argc: Nombre d'arguments */
 /* ** argv: Valeur des arguments */
 {
-  int ierr;                      /* Error code for various operations */
-  int jj;                        /* Loop counter */
-  int nbpoints, la;              /* nbpoints: total points, la: interior points */
-  int ku, kl, kv, lab;           /* Band matrix parameters: ku/kl=super/sub diagonals, kv=extra space, lab=leading dimension */
-  int *ipiv;                     /* Pivot indices for LU factorization */
-  int info = 1;                  /* LAPACK info parameter (0=success) */
-  int NRHS;                      /* Number of right-hand sides */
-  int IMPLEM = 0;                /* Implementation method (TRF, TRI, or SV) */
-  double T0, T1;                 /* Boundary conditions: T0 at x=0, T1 at x=1 */
-  double *RHS, *EX_SOL, *X;      /* RHS: right-hand side, EX_SOL: exact solution, X: grid points */
-  double **AAB;                  /* Unused variable */
-  double *AB;                    /* Coefficient matrix in band storage */
+  int ierr;                                                       /* Error code for various operations */
+  int jj;                                                         /* Loop counter */
+  int nbpoints, la;                                               /* nbpoints: total points, la: interior points */
+  int ku, kl, kv, lab;                                            /* Band matrix parameters: ku/kl=super/sub diagonals, kv=extra space, lab=leading dimension */
+  int *ipiv;                                                      /* Pivot indices for LU factorization */
+  int info = 1;                                                   /* LAPACK info parameter (0=success) */
+  int NRHS;                                                       /* Number of right-hand sides */
+  int IMPLEM = 0;                                                 /* Implementation method (TRF, TRI, or SV) */
+  double T0, T1;                                                  /* Boundary conditions: T0 at x=0, T1 at x=1 */
+  double *RHS, *EX_SOL, *X, *RHS_2, *RHS_3, *EX_RHS, *RHS_4;      /* RHS: right-hand side, EX_SOL: exact solution, X: grid points */
+  double **AAB;                                                   /* Unused variable */
+  double *AB;                                                     /* Coefficient matrix in band storage */
 
-  double relres;                 /* Relative forward error */
+  double relres;                                                  /* Relative forward error */
 
   if (argc == 2) {
     IMPLEM = atoi(argv[1]);
@@ -83,6 +83,28 @@ int main(int argc,char *argv[])
   printf("Solution with LAPACK\n");
   ipiv = (int *) calloc(la, sizeof(int));  /* Pivot indices for LU factorization */
 
+
+  // Using dgbmv
+  RHS_2 =(double *) malloc(sizeof(double)*la);
+  printf("DGBMV\n");
+  cblas_dgbmv(CblasColMajor,CblasNoTrans,la,la,kl,ku,1.0,AB+1,lab,EX_SOL,1,0.0,RHS_2,1);
+  write_vec(RHS_2, &la, "RHS_2.dat");
+
+  // Validation for dgbmv
+  relres = relative_forward_error(RHS,RHS_2, &la);
+  printf("The relative forward error for dgbmv is relres = %e\n",relres);
+
+  /* LU Factorization */
+  
+  set_GB_operator_colMajor_poisson1D(AB, &lab, &la, &kv);
+  set_dense_RHS_DBC_1D(RHS_2,&la,&T0,&T1);
+  dgbtrf_(&la, &la, &kl, &ku, AB, &lab, ipiv, &info);
+  write_GB_operator_colMajor_poisson1D(AB, &lab, &la, "data/LU_solution_exact.dat");
+  /* Validation of LU for tridiagonal matrix (dgbtrf/dgbtrs) */
+  relres = relative_forward_error(EX_SOL,RHS_2, &la);
+  printf("\nThe relative forward error for dgbtrf/dgbtrs is relres = %e\n",relres);
+
+
   /* LU Factorization using LAPACK's general band factorization */
   if (IMPLEM == TRF) {
     dgbtrf_(&la, &la, &kl, &ku, AB, &lab, ipiv, &info);
@@ -90,7 +112,7 @@ int main(int argc,char *argv[])
 
   /* LU for tridiagonal matrix (can replace dgbtrf_) - custom implementation */
   if (IMPLEM == TRI) {
-    dgbtrftridiag(&la, &la, &kl, &ku, AB, &lab, ipiv, &info);
+    dgbtrftridiag(&la, &la, &kl, &ku, AB, &lab, ipiv, &info); 
   }
 
   /* Back-substitution to solve the system after factorization */
@@ -106,12 +128,34 @@ int main(int argc,char *argv[])
 
   /* Alternative: solve directly using dgbsv */
   if (IMPLEM == SV) {
-    // TODO : use dgbsv
+    RHS_3=(double *) malloc(sizeof(double)*la);
+    set_GB_operator_colMajor_poisson1D(AB, &lab, &la, &kv);
+    set_dense_RHS_DBC_1D(RHS_3,&la,&T0,&T1);
+    set_analytical_solution_DBC_1D(EX_SOL, X, &la, &T0, &T1);
+
+    dgbsv_(&la, &kl, &ku, &NRHS, AB, &lab, ipiv,RHS_3, &la, &info);
+    write_xy(RHS_3, X, &la, "data/SOL_direct.dat");
+
+    // Relative forward error for dgbsv
+    relres = relative_forward_error(EX_SOL,RHS_3,&la);
+    printf("\nThe relative forward error for dgbsv is relres = %e\n",relres);  
+  
   }
 
   /* Write results to files */
   write_GB_operator_colMajor_poisson1D(AB, &lab, &la, "LU.dat");  /* LU factors */
   write_xy(RHS, X, &la, "SOL.dat");  /* Solution at grid points (RHS now contains solution) */
+
+  /* LU for tridiagonal matrix  (can replace dgbtrf_) */
+  set_GB_operator_colMajor_poisson1D(AB, &lab, &la, &kv);
+  set_dense_RHS_DBC_1D(RHS_2,&la,&T0,&T1);
+  set_analytical_solution_DBC_1D(EX_SOL, X, &la, &T0, &T1);
+
+  ierr = dgbtrftridiag(&la, &la, &kl, &ku, AB, &lab, ipiv, &info);
+  /* Validation of our LU method for tridiagonal matrix */
+  relres = relative_forward_error(EX_SOL,RHS_2, &la);
+  printf("\nThe relative forward error for dgbtrftridiag is relres = %e\n",relres);
+
 
   /* Relative forward error - compare numerical solution with exact solution */
   relres = relative_forward_error(RHS, EX_SOL, &la);
