@@ -5,6 +5,7 @@
 /* using direct methods (LU factorization)*/
 /******************************************/
 #include "lib_poisson1D.h"
+#include <time.h> 
 
 #define TRF 0  /* Use LAPACK dgbtrf for LU factorization */
 #define TRI 1  /* Use custom tridiagonal LU factorization */
@@ -12,46 +13,56 @@
 
 /**
  * Main function to solve the 1D Poisson equation -u''(x) = f(x) with Dirichlet BC.
- * 
- * @param argc: Number of command-line arguments
+ * * @param argc: Number of command-line arguments
  * @param argv: Array of argument strings
- *              argv[1] (optional): Implementation method (0=TRF, 1=TRI, 2=SV)
+ * argv[1]: Implementation method (0=TRF, 1=TRI, 2=SV)
+ * argv[2]: Number of points (Optional, default=10)
  * @return 0 on success
  */
 int main(int argc,char *argv[])
 /* ** argc: Nombre d'arguments */
 /* ** argv: Valeur des arguments */
 {
-  int ierr;                                                       /* Error code for various operations */
-  int jj;                                                         /* Loop counter */
-  int nbpoints, la;                                               /* nbpoints: total points, la: interior points */
-  int ku, kl, kv, lab;                                            /* Band matrix parameters: ku/kl=super/sub diagonals, kv=extra space, lab=leading dimension */
-  int *ipiv;                                                      /* Pivot indices for LU factorization */
-  int info = 1;                                                   /* LAPACK info parameter (0=success) */
-  int NRHS;                                                       /* Number of right-hand sides */
-  int IMPLEM = 0;                                                 /* Implementation method (TRF, TRI, or SV) */
-  double T0, T1;                                                  /* Boundary conditions: T0 at x=0, T1 at x=1 */
-  double *RHS, *EX_SOL, *X, *RHS_2, *RHS_3, *EX_RHS, *RHS_4;      /* RHS: right-hand side, EX_SOL: exact solution, X: grid points */
-  double **AAB;                                                   /* Unused variable */
-  double *AB;                                                     /* Coefficient matrix in band storage */
+  int ierr;                      /* Error code for various operations */
+  int jj;                        /* Loop counter */
+  int nbpoints, la;              /* nbpoints: total points, la: interior points */
+  int ku, kl, kv, lab;           /* Band matrix parameters: ku/kl=super/sub diagonals, kv=extra space, lab=leading dimension */
+  int *ipiv;                     /* Pivot indices for LU factorization */
+  int info = 1;                  /* LAPACK info parameter (0=success) */
+  int NRHS;                      /* Number of right-hand sides */
+  int IMPLEM = 0;                /* Implementation method (TRF, TRI, or SV) */
+  double T0, T1;                 /* Boundary conditions: T0 at x=0, T1 at x=1 */
+  double *RHS, *EX_SOL, *X;      /* RHS: right-hand side, EX_SOL: exact solution, X: grid points */
+  double **AAB;                  /* Unused variable */
+  double *AB;                    /* Coefficient matrix in band storage */
 
-  double relres;                                                  /* Relative forward error */
+  double relres;                 /* Relative forward error */
+  
+  // AJOUT : Variables pour le chronométrage
+  clock_t start, end;
+  double cpu_time_used;
 
+  /* MODIF : Gestion des arguments pour récupérer la taille (nbpoints) */
+  nbpoints = 10; // Default value
   if (argc == 2) {
     IMPLEM = atoi(argv[1]);
-  } else if (argc > 2) {
-    perror("Application takes at most one argument");
+  } else if (argc == 3) {
+    IMPLEM = atoi(argv[1]);
+    nbpoints = atoi(argv[2]); // Récupère la taille depuis la commande
+  } else if (argc > 3) {
+    perror("Application takes at most two arguments");
     exit(1);
   }
 
   /* Problem setup */
   NRHS=1;           /* Solving Ax=b with one right-hand side */
-  nbpoints=10;      /* Total number of discretization points (including boundaries) */
+  /* nbpoints=10;  <-- REMOVE : géré dynamiquement au dessus */     
   la=nbpoints-2;    /* Number of interior points (excluding boundaries) */
   T0=-5.0;          /* Dirichlet boundary condition at x=0 */
   T1=5.0;           /* Dirichlet boundary condition at x=1 */
 
-  printf("--------- Poisson 1D ---------\n\n");
+  printf("--------- Poisson 1D (N=%d) ---------\n\n", nbpoints);
+  
   /* Allocate memory for vectors */
   RHS=(double *) malloc(sizeof(double)*la);      /* Right-hand side vector */
   EX_SOL=(double *) malloc(sizeof(double)*la);   /* Analytical/exact solution */
@@ -83,27 +94,8 @@ int main(int argc,char *argv[])
   printf("Solution with LAPACK\n");
   ipiv = (int *) calloc(la, sizeof(int));  /* Pivot indices for LU factorization */
 
-
-  // Using dgbmv
-  RHS_2 =(double *) malloc(sizeof(double)*la);
-  printf("DGBMV\n");
-  cblas_dgbmv(CblasColMajor,CblasNoTrans,la,la,kl,ku,1.0,AB+1,lab,EX_SOL,1,0.0,RHS_2,1);
-  write_vec(RHS_2, &la, "RHS_2.dat");
-
-  // Validation for dgbmv
-  relres = relative_forward_error(RHS,RHS_2, &la);
-  printf("The relative forward error for dgbmv is relres = %e\n",relres);
-
-  /* LU Factorization */
-  
-  set_GB_operator_colMajor_poisson1D(AB, &lab, &la, &kv);
-  set_dense_RHS_DBC_1D(RHS_2,&la,&T0,&T1);
-  dgbtrf_(&la, &la, &kl, &ku, AB, &lab, ipiv, &info);
-  write_GB_operator_colMajor_poisson1D(AB, &lab, &la, "data/LU_solution_exact.dat");
-  /* Validation of LU for tridiagonal matrix (dgbtrf/dgbtrs) */
-  relres = relative_forward_error(EX_SOL,RHS_2, &la);
-  printf("\nThe relative forward error for dgbtrf/dgbtrs is relres = %e\n",relres);
-
+  // AJOUT : Début du chrono pour les méthodes décomposées (TRF/TRI)
+  if (IMPLEM == TRF || IMPLEM == TRI) start = clock();
 
   /* LU Factorization using LAPACK's general band factorization */
   if (IMPLEM == TRF) {
@@ -112,7 +104,8 @@ int main(int argc,char *argv[])
 
   /* LU for tridiagonal matrix (can replace dgbtrf_) - custom implementation */
   if (IMPLEM == TRI) {
-    dgbtrftridiag(&la, &la, &kl, &ku, AB, &lab, ipiv, &info); 
+    // Assure-toi que cette fonction est bien déclarée dans lib_poisson1D.h
+    dgbtrftridiag(&la, &la, &kl, &ku, AB, &lab, ipiv, &info);
   }
 
   /* Back-substitution to solve the system after factorization */
@@ -124,38 +117,28 @@ int main(int argc,char *argv[])
     }else{
       printf("\n INFO = %d\n",info);
     }
+    // AJOUT : Fin du chrono pour TRF/TRI
+    end = clock();
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+    printf("Temps execution (Factorisation + Solve) : %e s\n", cpu_time_used);
   }
 
   /* Alternative: solve directly using dgbsv */
   if (IMPLEM == SV) {
-    RHS_3=(double *) malloc(sizeof(double)*la);
-    set_GB_operator_colMajor_poisson1D(AB, &lab, &la, &kv);
-    set_dense_RHS_DBC_1D(RHS_3,&la,&T0,&T1);
-    set_analytical_solution_DBC_1D(EX_SOL, X, &la, &T0, &T1);
-
-    dgbsv_(&la, &kl, &ku, &NRHS, AB, &lab, ipiv,RHS_3, &la, &info);
-    write_xy(RHS_3, X, &la, "data/SOL_direct.dat");
-
-    // Relative forward error for dgbsv
-    relres = relative_forward_error(EX_SOL,RHS_3,&la);
-    printf("\nThe relative forward error for dgbsv is relres = %e\n",relres);  
-  
+    // AJOUT : Implémentation de DGBSV et chrono
+    start = clock();
+    dgbsv_(&la, &kl, &ku, &NRHS, AB, &lab, ipiv, RHS, &la, &info);
+    end = clock();
+    
+    if (info!=0){printf("\n INFO DGBSV = %d\n",info);}
+    
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+    printf("Temps execution (DGBSV) : %e s\n", cpu_time_used);
   }
 
   /* Write results to files */
   write_GB_operator_colMajor_poisson1D(AB, &lab, &la, "LU.dat");  /* LU factors */
   write_xy(RHS, X, &la, "SOL.dat");  /* Solution at grid points (RHS now contains solution) */
-
-  /* LU for tridiagonal matrix  (can replace dgbtrf_) */
-  set_GB_operator_colMajor_poisson1D(AB, &lab, &la, &kv);
-  set_dense_RHS_DBC_1D(RHS_2,&la,&T0,&T1);
-  set_analytical_solution_DBC_1D(EX_SOL, X, &la, &T0, &T1);
-
-  ierr = dgbtrftridiag(&la, &la, &kl, &ku, AB, &lab, ipiv, &info);
-  /* Validation of our LU method for tridiagonal matrix */
-  relres = relative_forward_error(EX_SOL,RHS_2, &la);
-  printf("\nThe relative forward error for dgbtrftridiag is relres = %e\n",relres);
-
 
   /* Relative forward error - compare numerical solution with exact solution */
   relres = relative_forward_error(RHS, EX_SOL, &la);
@@ -167,5 +150,6 @@ int main(int argc,char *argv[])
   free(EX_SOL);
   free(X);
   free(AB);
+  free(ipiv); 
   printf("\n\n--------- End -----------\n");
 }
